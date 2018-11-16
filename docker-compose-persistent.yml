@@ -1,117 +1,104 @@
-input-jti:
-  image: $INPUT_JTI_IMAGE_NAME:$IMAGE_TAG
-  container_name: $INPUT_JTI_CONTAINER_NAME
-  restart: always
-  environment:
-   - "INFLUXDB_ADDR=opennti"
-   - "OUTPUT_INFLUXDB=true"
-   - "OUTPUT_STDOUT=false"
-  ports:
-   - "$LOCAL_PORT_JTI:50000/udp"
-   - "$LOCAL_PORT_ANALYTICSD:50020/udp"
-  volumes:
-   - /etc/localtime:/etc/localtime
-  links:
-   - opennti
+version: '3'
 
-input-syslog:
-  image: $INPUT_SYSLOG_IMAGE_NAME:$IMAGE_TAG
-  container_name: $INPUT_SYSLOG_CONTAINER_NAME
-  restart: always
-  environment:
-   - "INFLUXDB_ADDR=opennti"
-   - "OUTPUT_INFLUXDB=true"
-   - "OUTPUT_STDOUT=false"
-  ports:
-   - "$LOCAL_PORT_EVENT:6000/udp"
-  volumes:
-   - /etc/localtime:/etc/localtime
-  links:
-   - opennti
+services:
+  influxdb:
+    image: influxdb:1.7.1-alpine
+    volumes:
+      - ./docker/influxdb/influxdb.conf:/etc/influxdb/infuxdb.conf:ro
+      - ./docker/influxdb/data:/var/lib/influxdb
+    restart: always
+    command: -config /etc/influxdb/influxdb.conf
 
-input-snmp:
-##  image: $INPUT_SNMP_IMAGE_NAME:$IMAGE_TAG
-  build: $INPUT_SNMP_DIR
-  container_name: $INPUT_SNMP_CONTAINER_NAME
-  volumes:
-    - /etc/localtime:/etc/localtime:ro
-    - ./$INPUT_SNMP_DIR/templates/telegraf.tmpl:/data/templates/telegraf.tmpl
-  ports:
-   - "$LOCAL_PORT_SNMP:162/udp"
-  links:
-    - opennti
-
-input-internal:
-#  image: $INPUT_INTERNAL_IMAGE_NAME:$IMAGE_TAG
-  build: $INPUT_INTERNAL_DIR
-  container_name: $INPUT_INTERNAL_CONTAINER_NAME
-  environment:
-    - "HOST_PROC=/rootfs/proc"
-    - "HOST_SYS=/rootfs/sys"
-    - "HOST_ETC=/rootfs/etc"
-  volumes:
-    - /etc/localtime:/etc/localtime:ro
-    - /var/run/docker.sock:/var/run/docker.sock:ro
-    - /sys:/rootfs/sys:ro
-    - /proc:/rootfs/proc:ro
-    - /etc:/rootfs/etc:ro
-  links:
-    - opennti
-input-oc:
-#  image: $INPUT_OC_IMAGE_NAME:$IMAGE_TAG
-  build: $INPUT_OC_DIR
-  container_name: $INPUT_OC_CONTAINER_NAME
-  volumes:
-    - /etc/localtime:/etc/localtime:ro
-    - ./$INPUT_OC_DIR/telegraf.tmpl:/source/telegraf.tmpl
-  ports:
-    - "$LOCAL_PORT_OC:50051/udp"
-  links:
-    - opennti
-kapacitor:
-    image: kapacitor:1.5.0
-    container_name: kapacitor
-    environment:
-      KAPACITOR_HOSTNAME: $KAPACITOR_CONTAINER_NAME
-      KAPACITOR_INFLUXDB_0_URLS_0: http://opennti_con:8086/
+  grafana:
+    image: grafana/grafana:5.3.2
+    restart: always
+    volumes:
+      - ./docker/grafana/data:/var/lib/grafana
     ports:
-      - "9092:9092"
-    links:
-      - opennti
+      - 3000:3000/tcp
 
-chronograf:
-    image: quay.io/influxdb/chronograf:1.5.0.1
-    container_name: $CHRONOGRAF_CONTAINER_NAME
-    environment:
-      INFLUXDB_URL: http://opennti_con:8086/
-      KAPACITOR_URL: http://kapacitor:9092/
+  chronograf:
+    image: chronograf:1.7.3-alpine
+    restart: always
+    command: --influxdb-url=http://influxdb:8086 --kapacitor-url=http://kapacitor:9092/
+    volumes:
+      - ./docker/chronograf/data:/var/lib/chronograf
     ports:
-      - "8888:8888"
-    links:
-      - opennti
+      - 8888:8888/tcp
+    depends_on:
+     - influxdb
 
-opennti:
-  image: $MAIN_IMAGE_NAME:$IMAGE_TAG
-  container_name: $MAIN_CONTAINER_NAME
-# Uncomment environment to allow anonymous grafana access
-# and disable user sign up
-  environment:
-    - "GF_PATHS_PROVISIONING=/src/provisioning"
-#   - "GF_USERS_ALLOW_SIGN_UP=false"
-#   - "GF_AUTH_ANONYMOUS_ENABLED=true"
-  restart: always
-  volumes:
-   - ./$LOCAL_DIR_GF_PROVISIONING:/src/provisioning
-   - ./$LOCAL_DIR_DASHBOARD:/src/dashboards
-   - ./$LOCAL_DIR_DATA:/opt/open-nti/data
-   - ./$LOCAL_DIR_LOG:/opt/open-nti/logs
-   - ./$LOCAL_DIR_DB_DATA:/data
-   - ./$LOCAL_DIR_DB_VAR:/var/lib/influxdb
-   - /etc/localtime:/etc/localtime
-  ports:
-   - "$LOCAL_PORT_STATSD:8125/udp"
-   - "$LOCAL_PORT_NGINX:80"
-   - "$LOCAL_PORT_GRAFANA:3000"
-   - "$LOCAL_PORT_INFLUXDB:8083"
-   - "$LOCAL_PORT_INFLUXDB_API:8086"
+  kapacitor:
+    image: kapacitor:1.5.1-alpine
+    restart: always
+    environment:
+      - "KAPACITOR_HOSTNAME=kapacitor"
+      - "KAPACITOR_INFLUXDB_0_URLS_0=http://influxdb:8086/"
+    volumes:
+      - ./docker/kapacitor/data:/var/lib/kapacitor
+    depends_on:
+     - influxdb
+     - chronograf
 
+## Service Inputs ##
+
+  input-agent:
+    build:
+      context: ./plugins/input-agent
+    restart: always
+    volumes:
+      - ./data:/opt/open-nti/data
+    depends_on:
+      - influxdb
+
+  input-jti:
+    build:
+      context: ./plugins/input-jti/
+    restart: always
+    ports:
+     - 50000:50000/udp
+     - 50020:50020/udp
+    volumes:
+     - /etc/localtime:/etc/localtime:ro
+    depends_on:
+     - influxdb
+
+  input-syslog:
+    image: juniper/open-nti-input-syslog:latest
+    restart: always
+    environment:
+     - "INFLUXDB_ADDR=influxdb"
+     - "OUTPUT_INFLUXDB=true"
+     - "OUTPUT_STDOUT=false"
+    ports:
+     - 6000:6000/udp
+    volumes:
+     - /etc/localtime:/etc/localtime:ro
+    depends_on:
+     - influxdb
+
+  input-snmp:
+    image: telegraf:1.8.3-alpine
+    restart: always
+    volumes:
+      - /etc/localtime:/etc/localtime
+      - ./plugins/input-snmp/telegraf.conf:/etc/telegraf/telegraf.conf:ro
+    depends_on:
+      - influxdb
+
+  input-internal:
+    image: telegraf:1.8.3-alpine
+    restart: always
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./plugins/input-internal/telegraf.conf:/etc/telegraf/telegraf.conf:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /sys:/rootfs/sys:ro
+      - /proc:/rootfs/proc:ro
+      - /etc:/rootfs/etc:ro
+    depends_on:
+     - influxdb
+
+#networks:
+#  default:
+#      name: opennti
